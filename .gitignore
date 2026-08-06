@@ -36,6 +36,9 @@ Thumbs.db
 .idea/
 *.iml
 
+# Claude Code
+.claude/
+
 # Render
 render-blueprint.yaml
 
