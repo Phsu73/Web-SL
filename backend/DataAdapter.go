@@ -4,23 +4,27 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// Đường dẫn tới database SQLite - có thể set qua environment variable
+// PostgreSQL connection string từ environment variable
 func getDBPath() string {
-	if path := os.Getenv("DB_PATH"); path != "" {
-		return path
+	if url := os.Getenv("DATABASE_URL"); url != "" {
+		return url
 	}
-	return "./hackathon-game.db" // Fallback cho local development
+	// Fallback cho local development với PostgreSQL
+	// Format: postgres://user:password@localhost:5432/dbname
+	if url := os.Getenv("POSTGRES_URL"); url != "" {
+		return url
+	}
+	return "postgres://postgres:trannguyenphu125@localhost:5432/postgres"
 }
 
 var (
-	dbMutex            sync.RWMutex // Đảm bảo an toàn concurrency đọc/ghi file local
+	dbMutex            sync.RWMutex
 	loginTimeMutex     sync.RWMutex
 	fallbackLoginTimes = make(map[int]time.Time)
 )
@@ -33,7 +37,7 @@ func saveAndLoadLoginTime(teamID int, loginTime time.Time) (time.Time, error) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
 		fmt.Printf("WARNING: cannot open DB for login_time save: %v. Using in-memory fallback.\n", err)
 		loginTimeMutex.Lock()
@@ -43,10 +47,10 @@ func saveAndLoadLoginTime(teamID int, loginTime time.Time) (time.Time, error) {
 	}
 	defer db.Close()
 
-	// Store as Unix timestamp to avoid timezone issues
+	// Store as timestamp
 	timestamp := loginTime.Unix()
-	fmt.Printf("Attempting to UPDATE teams SET login_time=%d WHERE team_id=%d\n", timestamp, teamID)
-	_, err = db.Exec("UPDATE teams SET login_time = ? WHERE team_id = ?",
+	fmt.Printf("Attempting to UPDATE teams SET login_time=$1 WHERE team_id=$2 [%d, %d]\n", timestamp, teamID)
+	_, err = db.Exec("UPDATE teams SET login_time = to_timestamp($1) WHERE team_id = $2",
 		timestamp, teamID)
 	if err != nil {
 		fmt.Printf("WARNING: database login_time update failed: %v. Using in-memory fallback.\n", err)
@@ -57,9 +61,8 @@ func saveAndLoadLoginTime(teamID int, loginTime time.Time) (time.Time, error) {
 	}
 	fmt.Printf("Successfully updated login_time for team %d\n", teamID)
 
-	// Query back the login_time - could be Unix timestamp (int) or DATETIME string
-	var existingTimestamp interface{}
-	err = db.QueryRow("SELECT login_time FROM teams WHERE team_id = ?", teamID).Scan(&existingTimestamp)
+	var existingTimestamp time.Time
+	err = db.QueryRow("SELECT login_time FROM teams WHERE team_id = $1", teamID).Scan(&existingTimestamp)
 	if err != nil {
 		fmt.Printf("WARNING: query login time failed: %v. Using in-memory fallback.\n", err)
 		loginTimeMutex.Lock()
@@ -67,27 +70,9 @@ func saveAndLoadLoginTime(teamID int, loginTime time.Time) (time.Time, error) {
 		loginTimeMutex.Unlock()
 		return loginTime, nil
 	}
-	fmt.Printf("Queried login_time: %v (type: %T)\n", existingTimestamp, existingTimestamp)
+	fmt.Printf("Queried login_time: %v\n", existingTimestamp)
 
-	var resLoginTime time.Time
-	switch v := existingTimestamp.(type) {
-	case time.Time:
-		resLoginTime = v
-	case int64:
-		resLoginTime = time.Unix(v, 0)
-	case string:
-		// Try parsing as Unix timestamp string or RFC3339
-		if ts, err := strconv.ParseInt(v, 10, 64); err == nil {
-			resLoginTime = time.Unix(ts, 0)
-		} else if parsedTime, err := time.Parse(time.RFC3339, v); err == nil {
-			resLoginTime = parsedTime
-		} else {
-			return time.Time{}, fmt.Errorf("cannot parse login_time string: %v", err)
-		}
-	default:
-		return time.Time{}, fmt.Errorf("unexpected login_time type: %T", v)
-	}
-	return resLoginTime, nil
+	return existingTimestamp, nil
 }
 
 func checkSessionValidity(teamID int) (bool, int, error) {
@@ -100,14 +85,14 @@ func checkSessionValidity(teamID int) (bool, int, error) {
 // ==========================================
 
 func loadQuestion(stationID int) (string, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return "", fmt.Errorf("open DB local: %v", err)
+		return "", fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var question string
-	err = db.QueryRow("SELECT question FROM stations WHERE station_id = ?", stationID).Scan(&question)
+	err = db.QueryRow("SELECT question FROM stations WHERE station_id = $1", stationID).Scan(&question)
 	if err != nil {
 		return "", fmt.Errorf("query question: %v", err)
 	}
@@ -115,14 +100,14 @@ func loadQuestion(stationID int) (string, error) {
 }
 
 func loadHint(stationID int, hintNum int) (string, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return "", fmt.Errorf("open DB local: %v", err)
+		return "", fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var hint string
-	query := fmt.Sprintf("SELECT hint%d FROM stations WHERE station_id = ?", hintNum)
+	query := fmt.Sprintf("SELECT hint%d FROM stations WHERE station_id = $1", hintNum)
 	err = db.QueryRow(query, stationID).Scan(&hint)
 	if err != nil {
 		return "", fmt.Errorf("query hint: %v", err)
@@ -131,14 +116,14 @@ func loadHint(stationID int, hintNum int) (string, error) {
 }
 
 func loadCorrectAnswer(stationID int) (string, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return "", fmt.Errorf("open DB local: %v", err)
+		return "", fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var answer string
-	err = db.QueryRow("SELECT answer FROM stations WHERE station_id = ?", stationID).Scan(&answer)
+	err = db.QueryRow("SELECT answer FROM stations WHERE station_id = $1", stationID).Scan(&answer)
 	if err != nil {
 		return "", fmt.Errorf("query answer: %v", err)
 	}
@@ -146,14 +131,14 @@ func loadCorrectAnswer(stationID int) (string, error) {
 }
 
 func loadRoom(stationID int) (string, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return "", fmt.Errorf("open DB local: %v", err)
+		return "", fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var room string
-	err = db.QueryRow("SELECT room FROM stations WHERE station_id = ?", stationID).Scan(&room)
+	err = db.QueryRow("SELECT room FROM stations WHERE station_id = $1", stationID).Scan(&room)
 	if err != nil {
 		return "", fmt.Errorf("query room: %v", err)
 	}
@@ -165,14 +150,14 @@ func loadRoom(stationID int) (string, error) {
 // ==========================================
 
 func loadScore(teamID int) (int, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return -1, fmt.Errorf("open DB local: %v", err)
+		return -1, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var score int
-	err = db.QueryRow("SELECT score FROM scores WHERE team_id = ?", teamID).Scan(&score)
+	err = db.QueryRow("SELECT score FROM scores WHERE team_id = $1", teamID).Scan(&score)
 	if err != nil {
 		return -1, fmt.Errorf("query score: %v", err)
 	}
@@ -183,13 +168,13 @@ func saveScore(teamID int, score int) error {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return fmt.Errorf("open DB local: %v", err)
+		return fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
-	_, err = db.Exec("UPDATE scores SET score = ? WHERE team_id = ?", score, teamID)
+	_, err = db.Exec("UPDATE scores SET score = $1 WHERE team_id = $2", score, teamID)
 	if err != nil {
 		return fmt.Errorf("update score failed: %v", err)
 	}
@@ -197,14 +182,14 @@ func saveScore(teamID int, score int) error {
 }
 
 func loadHintClicked(teamID int, questionID int) (int, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return -1, fmt.Errorf("open DB local: %v", err)
+		return -1, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var hintClicked int
-	err = db.QueryRow("SELECT clicked FROM hint_click WHERE team_id = ? AND question_id = ?", teamID, questionID).Scan(&hintClicked)
+	err = db.QueryRow("SELECT clicked FROM hint_click WHERE team_id = $1 AND question_id = $2", teamID, questionID).Scan(&hintClicked)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
@@ -218,20 +203,20 @@ func saveHintClicked(teamID int, questionID int, clicked int) error {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return fmt.Errorf("open DB local: %v", err)
+		return fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var currentClicked int
-	err = db.QueryRow("SELECT clicked FROM hint_click WHERE team_id = ? AND question_id = ?", teamID, questionID).Scan(&currentClicked)
+	err = db.QueryRow("SELECT clicked FROM hint_click WHERE team_id = $1 AND question_id = $2", teamID, questionID).Scan(&currentClicked)
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("check current hint click failed: %v", err)
 	}
 
 	if currentClicked < clicked {
-		res, err := db.Exec("UPDATE hint_click SET clicked = ? WHERE team_id = ? AND question_id = ?", clicked, teamID, questionID)
+		res, err := db.Exec("UPDATE hint_click SET clicked = $1 WHERE team_id = $2 AND question_id = $3", clicked, teamID, questionID)
 		if err != nil {
 			return fmt.Errorf("update hint_click failed: %v", err)
 		}
@@ -240,7 +225,7 @@ func saveHintClicked(teamID int, questionID int, clicked int) error {
 			return fmt.Errorf("checking rows affected: %v", err)
 		}
 		if rows == 0 {
-			_, err := db.Exec("INSERT INTO hint_click (team_id, question_id, clicked) VALUES (?, ?, ?)", teamID, questionID, clicked)
+			_, err := db.Exec("INSERT INTO hint_click (team_id, question_id, clicked) VALUES ($1, $2, $3)", teamID, questionID, clicked)
 			if err != nil {
 				return fmt.Errorf("insert hint_click failed: %v", err)
 			}
@@ -257,13 +242,13 @@ func addCurrentStation(teamID int, stationID int) error {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return fmt.Errorf("open DB local: %v", err)
+		return fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
-	_, err = db.Exec("UPDATE checkpoints SET atStation = ?, station_start_time = CURRENT_TIMESTAMP WHERE team_id = ?", stationID, teamID)
+	_, err = db.Exec("UPDATE checkpoints SET atStation = $1, station_start_time = CURRENT_TIMESTAMP WHERE team_id = $2", stationID, teamID)
 	if err != nil {
 		return fmt.Errorf("update current station: %v", err)
 	}
@@ -271,14 +256,14 @@ func addCurrentStation(teamID int, stationID int) error {
 }
 
 func loadCurrentStation(teamID int) (int, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return -1, fmt.Errorf("open DB local: %v", err)
+		return -1, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var currentStation int
-	err = db.QueryRow("SELECT atStation FROM checkpoints WHERE team_id = ?", teamID).Scan(&currentStation)
+	err = db.QueryRow("SELECT atStation FROM checkpoints WHERE team_id = $1", teamID).Scan(&currentStation)
 	if err != nil {
 		return -1, fmt.Errorf("query current station: %v", err)
 	}
@@ -286,14 +271,14 @@ func loadCurrentStation(teamID int) (int, error) {
 }
 
 func loadStationStartTime(teamID int) (time.Time, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return time.Time{}, fmt.Errorf("open DB local: %v", err)
+		return time.Time{}, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var startTime time.Time
-	err = db.QueryRow("SELECT station_start_time FROM checkpoints WHERE team_id = ?", teamID).Scan(&startTime)
+	err = db.QueryRow("SELECT station_start_time FROM checkpoints WHERE team_id = $1", teamID).Scan(&startTime)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("query station start time: %v", err)
 	}
@@ -304,13 +289,13 @@ func removeCurrentStation(teamID int) error {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return fmt.Errorf("open DB local: %v", err)
+		return fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
-	_, err = db.Exec("UPDATE checkpoints SET atStation = 0 WHERE team_id = ?", teamID)
+	_, err = db.Exec("UPDATE checkpoints SET atStation = 0 WHERE team_id = $1", teamID)
 	if err != nil {
 		return fmt.Errorf("update current station: %v", err)
 	}
@@ -318,14 +303,14 @@ func removeCurrentStation(teamID int) error {
 }
 
 func loadFinishedStations(teamID int) (string, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return "", fmt.Errorf("open DB local: %v", err)
+		return "", fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var finishedStations string
-	err = db.QueryRow("SELECT finishedStations FROM checkpoints WHERE team_id = ?", teamID).Scan(&finishedStations)
+	err = db.QueryRow("SELECT finishedStations FROM checkpoints WHERE team_id = $1", teamID).Scan(&finishedStations)
 	if err != nil {
 		return "", fmt.Errorf("query finished stations: %v", err)
 	}
@@ -336,14 +321,14 @@ func updateProgress(teamID int, stationID int) (bool, error) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return false, fmt.Errorf("open DB local: %v", err)
+		return false, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var currentStation int
-	err = db.QueryRow("SELECT atStation FROM checkpoints WHERE team_id = ?", teamID).Scan(&currentStation)
+	err = db.QueryRow("SELECT atStation FROM checkpoints WHERE team_id = $1", teamID).Scan(&currentStation)
 	if err != nil {
 		return false, fmt.Errorf("query atStation failed: %v", err)
 	}
@@ -351,13 +336,13 @@ func updateProgress(teamID int, stationID int) (bool, error) {
 		return false, nil
 	}
 	var finishedStations string
-	err = db.QueryRow("SELECT finishedStations FROM checkpoints WHERE team_id = ?", teamID).Scan(&finishedStations)
+	err = db.QueryRow("SELECT finishedStations FROM checkpoints WHERE team_id = $1", teamID).Scan(&finishedStations)
 	if err != nil {
 		return false, fmt.Errorf("query finished stations failed: %v", err)
 	}
 
 	updatedFinished := appendFinishedStation(finishedStations, stationID)
-	_, err = db.Exec("UPDATE checkpoints SET finishedStations = ? WHERE team_id = ?", updatedFinished, teamID)
+	_, err = db.Exec("UPDATE checkpoints SET finishedStations = $1 WHERE team_id = $2", updatedFinished, teamID)
 	if err != nil {
 		return false, fmt.Errorf("update progress: %v", err)
 	}
@@ -369,14 +354,14 @@ func updateProgress(teamID int, stationID int) (bool, error) {
 // ==========================================
 
 func loadLoginInfo(teamID int) (string, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return "", fmt.Errorf("open DB local: %v", err)
+		return "", fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var loginCode string
-	err = db.QueryRow("SELECT login_code FROM teams WHERE team_id = ?", teamID).Scan(&loginCode)
+	err = db.QueryRow("SELECT login_code FROM teams WHERE team_id = $1", teamID).Scan(&loginCode)
 	if err != nil {
 		return "", fmt.Errorf("query login_code: %v", err)
 	}
@@ -387,14 +372,14 @@ func addQueue(teamID int, questionID int) (bool, error) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return false, fmt.Errorf("open DB local: %v", err)
+		return false, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var existingPosition int
-	err = db.QueryRow(`SELECT position FROM queues WHERE queue_id = ? AND team_id = ?`, questionID, teamID).Scan(&existingPosition)
+	err = db.QueryRow(`SELECT position FROM queues WHERE queue_id = $1 AND team_id = $2`, questionID, teamID).Scan(&existingPosition)
 	if err == nil {
 		return true, nil
 	} else if err != sql.ErrNoRows {
@@ -402,7 +387,7 @@ func addQueue(teamID int, questionID int) (bool, error) {
 	}
 
 	var count int
-	err = db.QueryRow(`SELECT COUNT(*) FROM queues WHERE queue_id = ?`, questionID).Scan(&count)
+	err = db.QueryRow(`SELECT COUNT(*) FROM queues WHERE queue_id = $1`, questionID).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to count queue: %v", err)
 	}
@@ -415,7 +400,7 @@ func addQueue(teamID int, questionID int) (bool, error) {
 
 	_, err = db.Exec(`
 		INSERT INTO queues (queue_id, position, team_id)
-		VALUES (?, ?, ?)`, questionID, position, teamID)
+		VALUES ($1, $2, $3)`, questionID, position, teamID)
 	if err != nil {
 		return false, fmt.Errorf("insert into queues: %v", err)
 	}
@@ -427,21 +412,21 @@ func removeQueue(teamID int, questionID int) error {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return fmt.Errorf("open DB local: %v", err)
+		return fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var pos int
-	err = db.QueryRow(`SELECT position FROM queues WHERE queue_id = ? AND team_id = ?`, questionID, teamID).Scan(&pos)
+	err = db.QueryRow(`SELECT position FROM queues WHERE queue_id = $1 AND team_id = $2`, questionID, teamID).Scan(&pos)
 	if err == sql.ErrNoRows {
 		return nil
 	} else if err != nil {
 		return fmt.Errorf("failed to find team position: %v", err)
 	}
 
-	_, err = db.Exec(`DELETE FROM queues WHERE queue_id = ? AND team_id = ?`, questionID, teamID)
+	_, err = db.Exec(`DELETE FROM queues WHERE queue_id = $1 AND team_id = $2`, questionID, teamID)
 	if err != nil {
 		return fmt.Errorf("failed to delete team from queue: %v", err)
 	}
@@ -449,7 +434,7 @@ func removeQueue(teamID int, questionID int) error {
 	_, err = db.Exec(`
 		UPDATE queues
 		SET position = position - 1
-		WHERE queue_id = ? AND position > ?
+		WHERE queue_id = $1 AND position > $2
 	`, questionID, pos)
 	if err != nil {
 		return fmt.Errorf("failed to shift queue: %v", err)
@@ -472,9 +457,9 @@ type StationCode struct {
 
 // loadStationCode retrieves a station code by its value
 func loadStationCode(stationID int, codeValue string) (*StationCode, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return nil, fmt.Errorf("open DB local: %v", err)
+		return nil, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
@@ -482,7 +467,7 @@ func loadStationCode(stationID int, codeValue string) (*StationCode, error) {
 	err = db.QueryRow(`
 		SELECT station_id, code_number, code_value, points
 		FROM station_codes
-		WHERE station_id = ? AND code_value = ?
+		WHERE station_id = $1 AND code_value = $2
 	`, stationID, codeValue).Scan(&code.StationID, &code.CodeNumber, &code.CodeValue, &code.Points)
 
 	if err != nil {
@@ -497,9 +482,9 @@ func loadStationCode(stationID int, codeValue string) (*StationCode, error) {
 
 // isCodeAlreadyUsed checks if a team has already used a specific code
 func isCodeAlreadyUsed(teamID int, stationID int, codeValue string) (bool, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return false, fmt.Errorf("open DB local: %v", err)
+		return false, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
@@ -507,7 +492,7 @@ func isCodeAlreadyUsed(teamID int, stationID int, codeValue string) (bool, error
 	err = db.QueryRow(`
 		SELECT used_by_team_id
 		FROM station_codes
-		WHERE station_id = ? AND code_value = ?
+		WHERE station_id = $1 AND code_value = $2
 	`, stationID, codeValue).Scan(&usedByTeamID)
 
 	if err != nil {
@@ -530,16 +515,16 @@ func markCodeAsUsed(teamID int, stationID int, codeValue string) error {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return fmt.Errorf("open DB local: %v", err)
+		return fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	_, err = db.Exec(`
 		UPDATE station_codes
-		SET used_by_team_id = ?, used_at = CURRENT_TIMESTAMP
-		WHERE station_id = ? AND code_value = ?
+		SET used_by_team_id = $1, used_at = CURRENT_TIMESTAMP
+		WHERE station_id = $2 AND code_value = $3
 	`, teamID, stationID, codeValue)
 
 	if err != nil {
@@ -563,16 +548,16 @@ func generateMentorCode(teamID int) (string, error) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return "", fmt.Errorf("open DB local: %v", err)
+		return "", fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	// Generate random 6-character code
 	code := fmt.Sprintf("MENTOR-%d-%s", teamID, randomString(4))
 
-	_, err = db.Exec(`UPDATE teams SET mentor_code = ? WHERE team_id = ?`, code, teamID)
+	_, err = db.Exec(`UPDATE teams SET mentor_code = $1 WHERE team_id = $2`, code, teamID)
 	if err != nil {
 		return "", fmt.Errorf("save mentor code: %v", err)
 	}
@@ -582,14 +567,14 @@ func generateMentorCode(teamID int) (string, error) {
 
 // validateMentorCode checks if a mentor code is valid and returns the associated team ID
 func validateMentorCode(mentorCode string) (int, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return 0, fmt.Errorf("open DB local: %v", err)
+		return 0, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
 	var teamID int
-	err = db.QueryRow(`SELECT team_id FROM teams WHERE mentor_code = ?`, mentorCode).Scan(&teamID)
+	err = db.QueryRow(`SELECT team_id FROM teams WHERE mentor_code = $1`, mentorCode).Scan(&teamID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, fmt.Errorf("invalid mentor code")
@@ -602,9 +587,9 @@ func validateMentorCode(mentorCode string) (int, error) {
 
 // getAllMentorCodes retrieves all mentor codes for admin display
 func getAllMentorCodes() ([]map[string]interface{}, error) {
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return nil, fmt.Errorf("open DB local: %v", err)
+		return nil, fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
@@ -643,9 +628,9 @@ func resetAllStationCodes() error {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return fmt.Errorf("open DB local: %v", err)
+		return fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
@@ -672,13 +657,13 @@ func deleteMentorCode(teamID int) error {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	db, err := sql.Open("sqlite", getDBPath())
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
-		return fmt.Errorf("open DB local: %v", err)
+		return fmt.Errorf("open DB: %v", err)
 	}
 	defer db.Close()
 
-	_, err = db.Exec(`UPDATE teams SET mentor_code = NULL WHERE team_id = ?`, teamID)
+	_, err = db.Exec(`UPDATE teams SET mentor_code = NULL WHERE team_id = $1`, teamID)
 	if err != nil {
 		return fmt.Errorf("delete mentor code: %v", err)
 	}

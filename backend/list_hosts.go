@@ -3,12 +3,18 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"os"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func ListHosts() {
-	db, err := sql.Open("sqlite", "./hackathon-game.db")
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://postgres:trannguyenphu125@db.bhufnlndpxfcjagzmjrs.supabase.co:5432/postgres"
+	}
+
+	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
 		fmt.Println("open error:", err)
 		return

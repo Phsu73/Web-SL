@@ -7,13 +7,12 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -519,7 +518,7 @@ func checkLoginInfoLocal(teamName string, loginCode string) (int, bool, string) 
 		return team.ID, result, team.Role
 	}
 
-	db, err := sql.Open("sqlite", "./hackathon-game.db")
+	db, err := sql.Open("pgx", getDBPath())
 	if err != nil {
 		fmt.Printf("Lỗi mở DB: %v\n", err)
 		return 0, false, "player"
@@ -1839,27 +1838,17 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
-func ensureDatabaseInitialized(db *sql.DB, dbPath string) error {
+func ensureDatabaseInitialized(db *sql.DB, _ string) error {
+	// PostgreSQL version - check if teams table exists
 	var tableCount int
-	err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='teams'").Scan(&tableCount)
+	err := db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'teams'").Scan(&tableCount)
 	if err == nil && tableCount > 0 {
 		return nil
 	}
 
-	seedPath := filepath.Join(filepath.Dir(dbPath), "hackathon-game.sql")
-	seedData, err := os.ReadFile(seedPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read seed SQL: %w", err)
-	}
-
-	if _, err := db.Exec(string(seedData)); err != nil {
-		return fmt.Errorf("initialize database from seed: %w", err)
-	}
-
-	fmt.Printf("Initialized database from %s\n", seedPath)
+	// For Supabase, database should already be initialized via schema.sql
+	// This is a fallback for local development
+	fmt.Println("Database not initialized. Please run schema.sql on Supabase.")
 	return nil
 }
 
@@ -1901,18 +1890,14 @@ func main() {
 	}
 
 	var err error
-	// Database path from environment variable with fallback
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = filepath.Join(".", "hackathon-game.db")
-	}
-	globalDB, err = sql.Open("sqlite", dbPath)
+	// Use DATABASE_URL for PostgreSQL connection
+	globalDB, err = sql.Open("pgx", getDBPath())
 	if err != nil {
 		log.Fatalf("Lỗi mở DB: %v", err)
 	}
 	defer globalDB.Close()
 
-	if err := ensureDatabaseInitialized(globalDB, dbPath); err != nil {
+	if err := ensureDatabaseInitialized(globalDB, ""); err != nil {
 		log.Printf("Cảnh báo khởi tạo DB: %v", err)
 	}
 
@@ -1957,6 +1942,6 @@ func main() {
 	// Mentor routes (protected but not player-only - mentors can access)
 	protected.HandleFunc("/mentor/submit-code", mentorCodeSubmitHandler).Methods("POST", "OPTIONS")
 
-	fmt.Printf("Server đang chạy trên port %s (Chế độ dữ liệu SQLite Local)\n", port)
+	fmt.Printf("Server đang chạy trên port %s (Chế độ dữ liệu Supabase PostgreSQL)\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, r))
 }

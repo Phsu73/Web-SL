@@ -1,6 +1,5 @@
-# Render.com Blueprint - Free tier (NO PERSISTENT DISK)
-# Warning: Database will be reset on every deploy/restart
-# Use Railway.app instead for persistent storage
+# Render.com Blueprint - Supabase Backend
+# PostgreSQL database on Supabase, backend on Render
 
 services:
   - type: pserv
@@ -13,9 +12,12 @@ services:
     envVars:
       - key: PORT
         value: "8080"
-      - key: DB_PATH
-        value: ./hackathon-game.db
+      - key: DATABASE_URL
+        # ⚠️ THAY THỂ BẰNG SUPABASE DATABASE URL CỦA BẠN
+        # Format: postgres://postgres:[password]@db.[project].supabase.co:5432/postgres
+        value: postgres://postgres:trannguyenphu125@db.bhufnlndpxfcjagzmjrs.supabase.co:5432/postgres
       - key: ALLOWED_ORIGINS
+        # ⚠️ THAY THỂ BẰNG URL NETLIFY CỦA BẠN SAU KHI DEPLOY FRONTEND
         value: https://YOUR_NETLIFY_SITE.netlify.app,http://localhost:5173
       - key: ENVIRONMENT
         value: production
