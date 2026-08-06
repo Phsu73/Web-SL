@@ -1,6 +1,6 @@
 module github.com/sciencelab-ltd/hackathon-game
 
-go 1.25.0
+go 1.23
 
 require (
 	github.com/gorilla/mux v1.8.1
