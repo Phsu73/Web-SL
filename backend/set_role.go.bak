@@ -1,0 +1,31 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+func main() {
+	if len(os.Args) < 3 {
+		fmt.Println("usage: go run set_role.go <teamID> <role>")
+		return
+	}
+	teamID := os.Args[1]
+	role := os.Args[2]
+	db, err := sql.Open("sqlite3", "./hackathon-game.db")
+	if err != nil {
+		fmt.Println("open db error:", err)
+		return
+	}
+	defer db.Close()
+	res, err := db.Exec("UPDATE teams SET role = ? WHERE team_id = ?", role, teamID)
+	if err != nil {
+		fmt.Println("update error:", err)
+		return
+	}
+	rows, _ := res.RowsAffected()
+	fmt.Printf("Updated role=%s for team %s (rows=%d)\n", role, teamID, rows)
+}

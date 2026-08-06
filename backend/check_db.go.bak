@@ -1,0 +1,52 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+
+	_ "modernc.org/sqlite"
+)
+
+func main() {
+	db, err := sql.Open("sqlite", "./hackathon-game.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	fmt.Println("=== STATIONS TABLE ===")
+	rows, err := db.Query("SELECT station_id, name, answer FROM stations")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int
+		var name, answer string
+		err = rows.Scan(&id, &name, &answer)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("ID: %d, Name: %s, Answer: %s\n", id, name, answer)
+	}
+
+	fmt.Println("\n=== CHECKPOINTS TABLE ===")
+	rows2, err := db.Query("SELECT team_id, finishedStations, atStation FROM checkpoints")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows2.Close()
+
+	for rows2.Next() {
+		var teamID int
+		var finishedStations string
+		var atStation int
+		err = rows2.Scan(&teamID, &finishedStations, &atStation)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("TeamID: %d, Finished: '%s', AtStation: %d\n", teamID, finishedStations, atStation)
+	}
+}

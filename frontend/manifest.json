@@ -1,0 +1,16 @@
+{
+  "name": "Science Lab Hackathon Game",
+  "short_name": "Hackathon Game",
+  "description": "Queue management game for team competitions",
+  "icons": [
+    {
+      "src": "/hackathon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#667eea",
+  "theme_color": "#667eea"
+}

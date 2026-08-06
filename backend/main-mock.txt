@@ -1,0 +1,1162 @@
+package main
+/*
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gorilla/mux"
+	_ "github.com/mattn/go-sqlite3" // Đảm bảo đã import driver SQLite3 ở đây
+)
+var db *sql.DB
+
+type Request struct {
+	Team    string `json:"team"`
+	QueueID int    `json:"queueID"`
+	Answer  string `json:"answer"`
+}
+
+type AnswerRequest struct {
+	TeamID    int    `json:"teamID"`
+	StationID int    `json:"stationID"`
+	Answer    string `json:"answer"`
+}
+
+type AnswerResponse struct {
+	Correct bool   `json:"correct"`
+	Message string `json:"message"`
+}
+
+type LoginRequest struct {
+	TeamID    int    `json:"teamID"`
+	LoginCode string `json:"loginCode"`
+}
+
+type LoginResponse struct {
+	Correct   bool   `json:"correct"`
+	LoginTime string `json:"loginTime,omitempty"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
+type HintRequest struct {
+	TeamID     int `json:"teamID"`
+	QuestionID int `json:"questionID"`
+	HintNum    int `json:"hintNum"`
+}
+type HintResponse struct {
+	Hint string `json:"hint"`
+}
+
+type QueueRequest struct {
+	TeamID  int `json:"teamID"`
+	QueueID int `json:"queueID"`
+}
+
+type QuestionRequest struct {
+	StationID int `json:"stationID"`
+	TeamID    int `json:"teamID"`
+}
+type QuestionResponse struct {
+	IsValid bool   `json:"isValid"`
+	Message string `json:"message,omitempty"`
+}
+
+type QueueResponse struct {
+	IsAvailable bool `json:"isAvailable"`
+}
+
+type ProgressRequest struct {
+	TeamID    int `json:"teamID"`
+	StationID int `json:"stationID"`
+}
+
+type ProgressResponse struct {
+	IsUpdated bool `json:"isUpdated"`
+}
+
+type GetProgressRequest struct {
+	TeamID int `json:"teamID"`
+}
+
+type GetProgressResponse struct {
+	Progress    int    `json:"stationNum"`
+	NextStation string `json:"nextStation"`
+}
+
+type HintRevealRequest struct {
+	TeamID int `json:"teamID"`
+}
+
+type HintRevealResponse struct {
+	HintClickedNum int    `json:"hintClickedNum"`
+	Hint1          string `json:"hint1,omitempty"`
+	Hint2          string `json:"hint2,omitempty"`
+	Hint3          string `json:"hint3,omitempty"`
+}
+
+// Giả lập cấu trúc Queue nếu cần
+type Queue struct {
+	// Định nghĩa struct Queue tùy thuộc vào logic của bạn
+}
+
+var queues []*Queue
+
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "http://localhost:5173" || origin == "https://hackagame.netlify.app" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Team-ID")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Hàm bổ trợ kiểm tra thông tin login bằng SQLite local thay vì gọi GCS
+func checkLoginInfoLocal(teamID int, loginCode string) bool {
+	var actualCode string
+	// Thực hiện truy vấn trực tiếp vào bảng 'teams' trong file database local
+	query := "SELECT login_code FROM teams WHERE team_id = ?"
+	err := db.QueryRow(query, teamID).Scan(&actualCode)
+	if err != nil {
+		log.Printf("Error querying login info for team %d: %v\n", teamID, err)
+		return false
+	}
+	return actualCode == loginCode
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	var req LoginRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received login request from team ID: %d\n", req.TeamID)
+
+	// --- ĐÃ SỬA: Thay thế hàm checkLoginInfo cũ (vốn gọi lên GCS) bằng hàm đọc database local ---
+	isCorrect := checkLoginInfoLocal(req.TeamID, req.LoginCode)
+
+	var response LoginResponse
+	if isCorrect {
+		newLoginTime := time.Now()
+		loginTime, err := saveAndLoadLoginTime(req.TeamID, newLoginTime)
+		expiresAt := loginTime.Add(3 * time.Hour)
+
+		if err != nil {
+			http.Error(w, "Failed to save login time", http.StatusInternalServerError)
+			return
+		}
+		response = LoginResponse{
+			Correct:   true,
+			LoginTime: loginTime.Format(time.RFC3339),
+			ExpiresAt: expiresAt.Format(time.RFC3339),
+		}
+	} else {
+		response = LoginResponse{
+			Correct: false,
+		}
+		fmt.Printf("Team %d provided incorrect login code\n", req.TeamID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func validateSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		teamIDStr := r.Header.Get("X-Team-ID")
+		if teamIDStr == "" {
+			http.Error(w, "Team ID required", http.StatusUnauthorized)
+			return
+		}
+
+		teamID, err := strconv.Atoi(teamIDStr)
+		if err != nil {
+			http.Error(w, "Invalid team ID", http.StatusBadRequest)
+			return
+		}
+
+		isValid, remainingSeconds, err := checkSessionValidity(teamID)
+		if err != nil {
+			http.Error(w, "Session check failed", http.StatusInternalServerError)
+			return
+		}
+
+		if !isValid {
+			http.Error(w, "Session expired", http.StatusUnauthorized)
+			return
+		}
+
+		w.Header().Set("X-Session-Remaining", strconv.Itoa(remainingSeconds))
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func questionHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["stationID"]
+	fmt.Printf("Received request for stationID: %s\n", idStr)
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Loading question for station ID: %d\n", id)
+	question, err := loadQuestion(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := map[string]string{"question": question}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func hintRevealHandler(w http.ResponseWriter, r *http.Request) {
+	var req HintRevealRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	fmt.Printf("Received hint reveal request from team %d\n", req.TeamID)
+
+	var questionID int
+	questionID, err = loadCurrentStation(req.TeamID)
+	if err != nil {
+		fmt.Printf("Error loading current station for team %d: %v\n", req.TeamID, err)
+		http.Error(w, "Failed to load current station", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("Team %d accessing hint page for station %d\n", req.TeamID, questionID)
+
+	var checkHintClicked int
+	checkHintClicked, err = loadHintClicked(req.TeamID, questionID)
+	if err != nil && err != sql.ErrNoRows {
+		fmt.Printf("Error loading hint clicked for team %d at station %d: %v\n", req.TeamID, questionID, err)
+		http.Error(w, "Failed to load hint clicked", http.StatusInternalServerError)
+		return
+	}
+
+	var response HintRevealResponse
+	response.HintClickedNum = checkHintClicked
+
+	fmt.Printf("Team %d has clicked %d hints for station %d\n", req.TeamID, checkHintClicked, questionID)
+
+	if checkHintClicked > 0 {
+		for i := 1; i <= checkHintClicked && i <= 3; i++ {
+			hint, err := loadHint(questionID, i)
+			if err != nil {
+				fmt.Printf("Error loading hint %d for station %d: %v\n", i, questionID, err)
+				http.Error(w, "Failed to load hint", http.StatusInternalServerError)
+				return
+			}
+			switch i {
+			case 1:
+				response.Hint1 = hint
+			case 2:
+				response.Hint2 = hint
+			case 3:
+				response.Hint3 = hint
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+	fmt.Printf("Successfully sent hint reveal response to team %d\n", req.TeamID)
+}
+
+func hintHandler(w http.ResponseWriter, r *http.Request) {
+	var req HintRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received hint request from team %d for station %d: hint %d\n", req.TeamID, req.QuestionID, req.HintNum)
+	err = saveHintClicked(req.TeamID, req.QuestionID, req.HintNum)
+	if err != nil {
+		http.Error(w, "Failed to save hint click", http.StatusInternalServerError)
+		return
+	}
+
+	var hint string
+	hint, err = loadHint(req.QuestionID, req.HintNum)
+	if err != nil {
+		http.Error(w, "Failed to load hint", http.StatusInternalServerError)
+		return
+	}
+
+	var response HintResponse
+	response = HintResponse{
+		Hint: hint,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func answerHandler(w http.ResponseWriter, r *http.Request) {
+	var req AnswerRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received answer from team %d for station %d: %s\n", req.TeamID, req.StationID, req.Answer)
+	var correctAnswer string
+	correctAnswer, err = loadCorrectAnswer(req.StationID)
+	if err != nil {
+		http.Error(w, "Failed to load correct answer", http.StatusInternalServerError)
+		return
+	}
+	isCorrect := checkAnswer(req.Answer, correctAnswer)
+	var response AnswerResponse
+	if isCorrect {
+		currentScore, err := loadScore(req.TeamID)
+		if err != nil {
+			http.Error(w, "Failed to load current score", http.StatusInternalServerError)
+			return
+		}
+		var hintClicked int
+		hintClicked, err = loadHintClicked(req.TeamID, req.StationID)
+		if err == sql.ErrNoRows {
+			hintClicked = 0
+		}
+		fmt.Printf("Hint clicked for team %d at station %d: %d\n", req.TeamID, req.StationID, hintClicked)
+		if hintClicked < 0 {
+			fmt.Printf("Warning: Negative hintClicked value for team %d at station %d, resetting to 0\n", req.TeamID, req.StationID)
+			hintClicked = 0
+		}
+		fmt.Printf("Hint clicked for team %d at station %d: %d\n", req.TeamID, req.StationID, hintClicked)
+		newScore := calScore(currentScore, 100, hintClicked)
+		fmt.Printf("Team %d current score: %d, new score after answering: %d\n", req.TeamID, currentScore, newScore)
+		err = saveScore(req.TeamID, newScore)
+		if err != nil {
+			http.Error(w, "Failed to save score", http.StatusInternalServerError)
+			return
+		}
+		var room string
+		room, err = loadRoom(req.StationID)
+		if err != nil {
+			http.Error(w, "Failed to load room", http.StatusInternalServerError)
+			return
+		}
+		response = AnswerResponse{
+			Correct: true,
+			Message: room,
+		}
+		fmt.Printf("Team %d got correct answer. Score updated to %d\n", req.TeamID, newScore)
+		err = removeQueue(req.TeamID, req.StationID)
+		if err != nil {
+			http.Error(w, "Failed to remove team from queue", http.StatusInternalServerError)
+			return
+		}
+		fmt.Printf("Team %d removed from queue for station %d\n", req.TeamID, req.StationID)
+
+	} else {
+		response = AnswerResponse{
+			Correct: false,
+			Message: "Đáp án không chính xác.",
+		}
+		fmt.Printf("Team %d got incorrect answer\n", req.TeamID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleQuestionClick(w http.ResponseWriter, r *http.Request) {
+	var req QuestionRequest
+	var response QuestionResponse
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received question request from team %d for station %d\n", req.TeamID, req.StationID)
+
+	isValid, err := checkStationAvailable(req.TeamID, req.StationID)
+	if err != nil {
+		http.Error(w, "Failed to check station availability", http.StatusInternalServerError)
+		return
+	}
+	if isValid {
+		isAvailable, err := addQueue(req.TeamID, req.StationID)
+		if err != nil {
+			http.Error(w, "Failed to add team to queue", http.StatusInternalServerError)
+			return
+		}
+		if isAvailable {
+			err := addCurrentStation(req.TeamID, req.StationID)
+			if err != nil {
+				http.Error(w, "Failed to set current station", http.StatusInternalServerError)
+				return
+			}
+			fmt.Printf("Added current station %d for Team %d \n", req.StationID, req.TeamID)
+			response = QuestionResponse{
+				IsValid: true,
+			}
+			fmt.Printf("Team %d added to queue for station %d\n", req.TeamID, req.StationID)
+		} else {
+			response = QuestionResponse{
+				IsValid: false,
+				Message: "Queue is full for this station.",
+			}
+			fmt.Printf("Team %d cannot access station %d due to full queue\n", req.TeamID, req.StationID)
+		}
+	} else {
+		response = QuestionResponse{
+			IsValid: false,
+			Message: "Invalid station for this team.",
+		}
+		fmt.Printf("Team %d cannot access station %d\n", req.TeamID, req.StationID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+	fmt.Printf("Station availability for team %d at station %d: %t\n", req.TeamID, req.StationID, isValid)
+}
+
+func updateProgressHandler(w http.ResponseWriter, r *http.Request) {
+	var req ProgressRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received progress update request from team %d for station %d\n", req.TeamID, req.StationID)
+
+	isUpdated, err := updateProgress(req.TeamID, req.StationID)
+	if err != nil {
+		http.Error(w, "Failed to update progress", http.StatusInternalServerError)
+		return
+	}
+	if isUpdated {
+		err = removeCurrentStation(req.TeamID)
+		if err != nil {
+			http.Error(w, "Failed to remove current station", http.StatusInternalServerError)
+			return
+		}
+	}
+	response := ProgressResponse{
+		IsUpdated: isUpdated,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+	fmt.Printf("Progress updated for team %d at station %d: %t\n", req.TeamID, req.StationID, isUpdated)
+	if isUpdated {
+		fmt.Printf("Team %d has successfully updated their progress at station %d\n", req.TeamID, req.StationID)
+	} else {
+		fmt.Printf("Team %d failed to update progress at station %d\n", req.TeamID, req.StationID)
+	}
+}
+
+func progressHandler(w http.ResponseWriter, r *http.Request) {
+	var req GetProgressRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received progress request from team %d", req.TeamID)
+	finishedStations, err := loadFinishedStations(req.TeamID)
+	if err != nil {
+		http.Error(w, "Failed to load finished stations", http.StatusInternalServerError)
+		return
+	}
+	var finishedCount int
+	if finishedStations == "" {
+		finishedCount = 0
+	} else {
+		parts := strings.Split(finishedStations, ",")
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			num, err := strconv.Atoi(p)
+			if err != nil {
+				continue
+			}
+			if num > 0 {
+				finishedCount++
+			}
+		}
+	}
+	var currentStation int
+	currentStation, err = loadCurrentStation(req.TeamID)
+	if err != nil {
+		http.Error(w, "Failed to load current station", http.StatusInternalServerError)
+		return
+	}
+	var nextStation string
+	nextStation, err = loadRoom(currentStation)
+	if err != nil {
+		http.Error(w, "Failed to load next station", http.StatusInternalServerError)
+		return
+	}
+	response := GetProgressResponse{
+		Progress:    finishedCount + 1,
+		NextStation: nextStation,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+	fmt.Printf("Successfully sent progress status.")
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+	func main() {
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "8080"
+		}
+
+		// --- ĐÃ SỬA: Khởi tạo kết nối SQLite trực tiếp vào file local ---
+		var err error
+		if err != nil {
+			log.Fatalf("Không thể kết nối đến file database SQLite local: %v", err)
+		}
+		defer db.Close()
+
+		// --- COMMENT/VÔ HIỆU HÓA HÀM TẢI FILE GCS LÚC KHỞI ĐỘNG (NẾU CÓ) ---
+		// log.Println("[+] Đang tải Database từ GCS...") -> Bỏ qua dòng này để tránh lỗi Billing Account Closed
+
+		r := mux.NewRouter()
+		r.Use(enableCORS)
+
+		r.HandleFunc("/health", healthHandler).Methods("GET")
+		r.HandleFunc("/", healthHandler).Methods("GET")
+		r.HandleFunc("/login", loginHandler).Methods("POST", "OPTIONS")
+
+		protected := r.PathPrefix("/").Subrouter()
+		protected.Use(validateSession)
+		protected.HandleFunc("/queue", handleQuestionClick).Methods("POST", "OPTIONS")
+		protected.HandleFunc("/checkpoint", updateProgressHandler).Methods("POST", "OPTIONS")
+		protected.HandleFunc("/stations/{stationID}", questionHandler).Methods("GET", "OPTIONS")
+		protected.HandleFunc("/answer", answerHandler).Methods("POST", "OPTIONS")
+		protected.HandleFunc("/hint", hintHandler).Methods("POST", "OPTIONS")
+		protected.HandleFunc("/hintreveal", hintRevealHandler).Methods("POST", "OPTIONS")
+		protected.HandleFunc("/loadprogress", progressHandler).Methods("POST", "OPTIONS")
+
+		fmt.Printf("Server starting on port %s (Chế độ dữ liệu SQLite Local)\n", port)
+		log.Fatal(http.ListenAndServe(":"+port, r))
+	}
+func main() {
+	var err error
+    db, err = sql.Open("sqlite3", "./hackathon-game.db")
+    if err != nil { log.Fatal(err) }
+    defer db.Close()
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	// Router khởi tạo
+	r := mux.NewRouter()
+	r.Use(enableCORS)
+
+	// Route
+	r.HandleFunc("/health", healthHandler).Methods("GET")
+	r.HandleFunc("/", healthHandler).Methods("GET")
+	r.HandleFunc("/login", loginHandler).Methods("POST", "OPTIONS")
+
+	protected := r.PathPrefix("/").Subrouter()
+	protected.Use(validateSession)
+	protected.HandleFunc("/queue", handleQuestionClick).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/checkpoint", updateProgressHandler).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/stations/{stationID}", questionHandler).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/answer", answerHandler).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/hint", hintHandler).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/hintreveal", hintRevealHandler).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/loadprogress", progressHandler).Methods("POST", "OPTIONS")
+
+	fmt.Printf("Server starting on port %s (SQLite Local Mode)\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+*/
+
+
+
+
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gorilla/mux"
+	_ "github.com/mattn/go-sqlite3" // Đảm bảo đã import driver SQLite3 ở đây
+)
+
+// --- ĐÃ XÓA var db *sql.DB ĐỂ TRÁNH LỖI REDECLARED VỚI FILE KHÁC ---
+
+type Request struct {
+	Team    string `json:"team"`
+	QueueID int    `json:"queueID"`
+	Answer  string `json:"answer"`
+}
+
+type AnswerRequest struct {
+	TeamID    int    `json:"teamID"`
+	StationID int    `json:"stationID"`
+	Answer    string `json:"answer"`
+}
+
+type AnswerResponse struct {
+	Correct bool   `json:"correct"`
+	Message string `json:"message"`
+}
+
+type LoginRequest struct {
+	TeamID    int    `json:"teamID"`
+	LoginCode string `json:"loginCode"`
+}
+
+type LoginResponse struct {
+	Correct   bool   `json:"correct"`
+	LoginTime string `json:"loginTime,omitempty"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
+type HintRequest struct {
+	TeamID     int `json:"teamID"`
+	QuestionID int `json:"questionID"`
+	HintNum    int `json:"hintNum"`
+}
+type HintResponse struct {
+	Hint string `json:"hint"`
+}
+
+type QueueRequest struct {
+	TeamID  int `json:"teamID"`
+	QueueID int `json:"queueID"`
+}
+
+type QuestionRequest struct {
+	StationID int `json:"stationID"`
+	TeamID    int `json:"teamID"`
+}
+type QuestionResponse struct {
+	IsValid bool   `json:"isValid"`
+	Message string `json:"message,omitempty"`
+}
+
+type QueueResponse struct {
+	IsAvailable bool `json:"isAvailable"`
+}
+
+type ProgressRequest struct {
+	TeamID    int `json:"teamID"`
+	StationID int `json:"stationID"`
+}
+
+type ProgressResponse struct {
+	IsUpdated bool `json:"isUpdated"`
+}
+
+type GetProgressRequest struct {
+	TeamID int `json:"teamID"`
+}
+
+type GetProgressResponse struct {
+	Progress    int    `json:"stationNum"`
+	NextStation string `json:"nextStation"`
+}
+
+type HintRevealRequest struct {
+	TeamID int `json:"teamID"`
+}
+
+type HintRevealResponse struct {
+	HintClickedNum int    `json:"hintClickedNum"`
+	Hint1          string `json:"hint1,omitempty"`
+	Hint2          string `json:"hint2,omitempty"`
+	Hint3          string `json:"hint3,omitempty"`
+}
+
+// Giả lập cấu trúc Queue nếu cần
+type Queue struct {
+	// Định nghĩa struct Queue tùy thuộc vào logic của bạn
+}
+
+var queues []*Queue
+
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "http://localhost:5173" || origin == "https://hackagame.netlify.app" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Team-ID")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// --- ĐÃ CHỈNH SỬA: Hàm tự mở kết nối SQLite local tại chỗ để chạy test ngon lành ---
+func checkLoginInfoLocal(teamID int, loginCode string) bool {
+	// Tự mở file DB local
+	localDB, err := sql.Open("sqlite3", "./hackathon-game.db")
+	if err != nil {
+		log.Printf("Error opening local database: %v\n", err)
+		return false
+	}
+	defer localDB.Close() // Dùng xong tự đóng luôn
+
+	var actualCode string
+	query := "SELECT login_code FROM teams WHERE team_id = ?"
+	err = localDB.QueryRow(query, teamID).Scan(&actualCode)
+	if err != nil {
+		log.Printf("Error querying login info for team %d: %v\n", teamID, err)
+		return false
+	}
+	return actualCode == loginCode
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	var req LoginRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received login request from team ID: %d\n", req.TeamID)
+
+	isCorrect := checkLoginInfoLocal(req.TeamID, req.LoginCode)
+	// (Đoạn loginHandler này sẽ được viết tiếp ở phần sau bạn gửi nhé)
+ var response LoginResponse
+	if isCorrect {
+		newLoginTime := time.Now()
+		loginTime, err := saveAndLoadLoginTime(req.TeamID, newLoginTime)
+		expiresAt := loginTime.Add(3 * time.Hour)
+
+		if err != nil {
+			http.Error(w, "Failed to save login time", http.StatusInternalServerError)
+			return
+		}
+		response = LoginResponse{
+			Correct:   true,
+			LoginTime: loginTime.Format(time.RFC3339),
+			ExpiresAt: expiresAt.Format(time.RFC3339),
+		}
+	} else {
+		response = LoginResponse{
+			Correct: false,
+		}
+		fmt.Printf("Team %d provided incorrect login code\n", req.TeamID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func validateSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		teamIDStr := r.Header.Get("X-Team-ID")
+		if teamIDStr == "" {
+			http.Error(w, "Team ID required", http.StatusUnauthorized)
+			return
+		}
+
+		teamID, err := strconv.Atoi(teamIDStr)
+		if err != nil {
+			http.Error(w, "Invalid team ID", http.StatusBadRequest)
+			return
+		}
+
+		isValid, remainingSeconds, err := checkSessionValidity(teamID)
+		if err != nil {
+			http.Error(w, "Session check failed", http.StatusInternalServerError)
+			return
+		}
+
+		if !isValid {
+			http.Error(w, "Session expired", http.StatusUnauthorized)
+			return
+		}
+
+		w.Header().Set("X-Session-Remaining", strconv.Itoa(remainingSeconds))
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func questionHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["stationID"]
+	fmt.Printf("Received request for stationID: %s\n", idStr)
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Loading question for station ID: %d\n", id)
+	question, err := loadQuestion(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := map[string]string{"question": question}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func hintRevealHandler(w http.ResponseWriter, r *http.Request) {
+	var req HintRevealRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	fmt.Printf("Received hint reveal request from team %d\n", req.TeamID)
+
+	var questionID int
+	questionID, err = loadCurrentStation(req.TeamID)
+	if err != nil {
+		fmt.Printf("Error loading current station for team %d: %v\n", req.TeamID, err)
+		http.Error(w, "Failed to load current station", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("Team %d accessing hint page for station %d\n", req.TeamID, questionID)
+
+	var checkHintClicked int
+	checkHintClicked, err = loadHintClicked(req.TeamID, questionID)
+	if err != nil && err != sql.ErrNoRows {
+		fmt.Printf("Error loading hint clicked for team %d at station %d: %v\n", req.TeamID, questionID, err)
+		http.Error(w, "Failed to load hint clicked", http.StatusInternalServerError)
+		return
+	}
+
+	var response HintRevealResponse
+	response.HintClickedNum = checkHintClicked
+
+	fmt.Printf("Team %d has clicked %d hints for station %d\n", req.TeamID, checkHintClicked, questionID)
+
+	if checkHintClicked > 0 {
+		for i := 1; i <= checkHintClicked && i <= 3; i++ {
+			hint, err := loadHint(questionID, i)
+			if err != nil {
+				fmt.Printf("Error loading hint %d for station %d: %v\n", i, questionID, err)
+				http.Error(w, "Failed to load hint", http.StatusInternalServerError)
+				return
+			}
+			switch i {
+			case 1:
+				response.Hint1 = hint
+			case 2:
+				response.Hint2 = hint
+			case 3:
+				response.Hint3 = hint
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+	fmt.Printf("Successfully sent hint reveal response to team %d\n", req.TeamID)
+}
+
+func hintHandler(w http.ResponseWriter, r *http.Request) {
+	var req HintRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received hint request from team %d for station %d: hint %d\n", req.TeamID, req.QuestionID, req.HintNum)
+	err = saveHintClicked(req.TeamID, req.QuestionID, req.HintNum)
+	if err != nil {
+		http.Error(w, "Failed to save hint click", http.StatusInternalServerError)
+		return
+	}
+
+	var hint stringhint, err = loadHint(req.QuestionID, req.HintNum)
+	if err != nil {
+		http.Error(w, "Failed to load hint", http.StatusInternalServerError)
+		return
+	}
+
+	var response HintResponse
+	response = HintResponse{
+		Hint: hint,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func answerHandler(w http.ResponseWriter, r *http.Request) {
+	var req AnswerRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received answer from team %d for station %d: %s\n", req.TeamID, req.StationID, req.Answer)
+	var correctAnswer string
+	correctAnswer, err = loadCorrectAnswer(req.StationID)
+	if err != nil {
+		http.Error(w, "Failed to load correct answer", http.StatusInternalServerError)
+		return
+	}
+	isCorrect := checkAnswer(req.Answer, correctAnswer)
+	var response AnswerResponse
+	if isCorrect {
+		currentScore, err := loadScore(req.TeamID)
+		if err != nil {
+			http.Error(w, "Failed to load current score", http.StatusInternalServerError)
+			return
+		}
+		var hintClicked int
+		hintClicked, err = loadHintClicked(req.TeamID, req.StationID)
+		if err == sql.ErrNoRows {
+			hintClicked = 0
+		}
+		fmt.Printf("Hint clicked for team %d at station %d: %d\n", req.TeamID, req.StationID, hintClicked)
+		if hintClicked < 0 {
+			fmt.Printf("Warning: Negative hintClicked value for team %d at station %d, resetting to 0\n", req.TeamID, req.StationID)
+			hintClicked = 0
+		}
+		fmt.Printf("Hint clicked for team %d at station %d: %d\n", req.TeamID, req.StationID, hintClicked)
+		newScore := calScore(currentScore, 100, hintClicked)
+		fmt.Printf("Team %d current score: %d, new score after answering: %d\n", req.TeamID, currentScore, newScore)
+		err = saveScore(req.TeamID, newScore)
+		if err != nil {
+			http.Error(w, "Failed to save score", http.StatusInternalServerError)
+			return
+		}
+		var room string
+		room, err = loadRoom(req.StationID)
+		if err != nil {
+			http.Error(w, "Failed to load room", http.StatusInternalServerError)
+			return
+		}
+		response = AnswerResponse{
+			Correct: true,
+			Message: room,
+		}
+		fmt.Printf("Team %d got correct answer. Score updated to %d\n", req.TeamID, newScore)
+		err = removeQueue(req.TeamID, req.StationID)
+		if err != nil {
+			http.Error(w, "Failed to remove team from queue", http.StatusInternalServerError)
+			return
+		}
+		fmt.Printf("Team %d removed from queue for station %d\n", req.TeamID, req.StationID)
+
+	} else {
+		response = AnswerResponse{
+			Correct: false,
+			Message: "Đáp án không chính xác.",
+		}
+		fmt.Printf("Team %d got incorrect answer\n", req.TeamID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleQuestionClick(w http.ResponseWriter, r *http.Request) {
+	var req QuestionRequest
+	var response QuestionResponse
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received question request from team %d for station %d\n", req.TeamID, req.StationID)
+
+	isValid, err := checkStationAvailable(req.TeamID, req.StationID)
+	if err != nil {
+		http.Error(w, "Failed to check station availability", http.StatusInternalServerError)
+		return
+	}
+	if isValid {
+		isAvailable, err := addQueue(req.TeamID, req.StationID)
+		if err != nil {
+			http.Error(w, "Failed to add team to queue", http.StatusInternalServerError)
+			return
+		}
+		if isAvailable {
+			err := addCurrentStation(req.TeamID, req.StationID)
+			if err != nil {
+				http.Error(w, "Failed to set current station", http.StatusInternalServerError)
+				return
+			}
+			fmt.Printf("Added current station %d for Team %d \n", req.StationID, req.TeamID)
+			response = QuestionResponse{
+				IsValid: true,
+			}
+			fmt.Printf("Team %d added to queue for station %d\n", req.TeamID, req.StationID)
+		} else {
+			response = QuestionResponse{
+				IsValid: false,
+				Message: "Queue is full for this station.",
+			}
+			fmt.Printf("Team %d cannot access station %d due to full queue\n", req.TeamID, req.StationID)
+		}
+	} else {
+		response = QuestionResponse{
+			IsValid: false,
+			Message: "Invalid station for this team.",
+		}
+		fmt.Printf("Team %d cannot access station %d\n", req.TeamID, req.StationID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+	fmt.Printf("Station availability for team %d at station %d: %t\n", req.TeamID, req.StationID, isValid)
+}
+
+func updateProgressHandler(w http.ResponseWriter, r *http.Request) {
+	var req ProgressRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received progress update request from team %d for station %d\n", req.TeamID, req.StationID)
+
+	isUpdated, err := updateProgress(req.TeamID, req.StationID)
+	if err != nil {
+		http.Error(w, "Failed to update progress", http.StatusInternalServerError)
+		return
+	}
+	if isUpdated {
+		err = removeCurrentStation(req.TeamID)if err != nil {
+			http.Error(w, "Failed to remove current station", http.StatusInternalServerError)
+			return
+		}
+	}
+	response := ProgressResponse{
+		IsUpdated: isUpdated,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+	fmt.Printf("Progress updated for team %d at station %d: %t\n", req.TeamID, req.StationID, isUpdated)
+	if isUpdated {
+		fmt.Printf("Team %d has successfully updated their progress at station %d\n", req.TeamID, req.StationID)
+	} else {
+		fmt.Printf("Team %d failed to update progress at station %d\n", req.TeamID, req.StationID)
+	}
+}
+
+func progressHandler(w http.ResponseWriter, r *http.Request) {
+	var req GetProgressRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("Received progress request from team %d", req.TeamID)
+	finishedStations, err := loadFinishedStations(req.TeamID)
+	if err != nil {
+		http.Error(w, "Failed to load finished stations", http.StatusInternalServerError)
+		return
+	}
+	var finishedCount int
+	if finishedStations == "" {
+		finishedCount = 0
+	} else {
+		parts := strings.Split(finishedStations, ",")
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			num, err := strconv.Atoi(p)
+			if err != nil {
+				continue
+			}
+			if num > 0 {
+				finishedCount++
+			}
+		}
+	}
+	var currentStation int
+	currentStation, err = loadCurrentStation(req.TeamID)
+	if err != nil {
+		http.Error(w, "Failed to load current station", http.StatusInternalServerError)
+		return
+	}
+	var nextStation string
+	nextStation, err = loadRoom(currentStation)
+	if err != nil {
+		http.Error(w, "Failed to load next station", http.StatusInternalServerError)
+		return
+	}
+	response := GetProgressResponse{
+		Progress:    finishedCount + 1,
+		NextStation: nextStation,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+	fmt.Printf("Successfully sent progress status.")
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	// --- ĐÃ ĐỔI SANG CHẾ ĐỘ LOCAL HOÀN TOÀN ---
+	// Không mở kết nối DB toàn cục tại đây nữa để tránh lỗi cắn nhau giữa các file.
+	// Tất cả các hàm nghiệp vụ của bạn sẽ tự động gọi thông qua DataAdapter.
+
+	// Khởi tạo Router
+	r := mux.NewRouter()
+	r.Use(enableCORS)
+
+	// Đăng ký các Route
+	r.HandleFunc("/health", healthHandler).Methods("GET")
+	r.HandleFunc("/", healthHandler).Methods("GET")
+	r.HandleFunc("/login", loginHandler).Methods("POST", "OPTIONS")
+
+	protected := r.PathPrefix("/").Subrouter()
+	protected.Use(validateSession)
+	protected.HandleFunc("/queue", handleQuestionClick).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/checkpoint", updateProgressHandler).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/stations/{stationID}", questionHandler).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/answer", answerHandler).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/hint", hintHandler).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/hintreveal", hintRevealHandler).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/loadprogress", progressHandler).Methods("POST", "OPTIONS")
+
+	fmt.Printf("Server đang chạy trên port %s (Chế độ dữ liệu SQLite Local)\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}

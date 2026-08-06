@@ -1,0 +1,23 @@
+# Environment variables
+.env
+.env.local
+
+# Database files (local development)
+*.db
+*.sqlite
+*.sqlite3
+
+# Build outputs
+*.exe
+*.out
+hackathon-game
+
+# Dependencies
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

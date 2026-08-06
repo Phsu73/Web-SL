@@ -1,0 +1,47 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+func main() {
+	db, err := sql.Open("sqlite3", "./hackathon-game.db")
+	if err != nil {
+		fmt.Println("open db error:", err)
+		return
+	}
+	defer db.Close()
+
+	teamID := 1
+	var loginCode, role, loginTime sql.NullString
+	err = db.QueryRow("SELECT login_code, role, login_time FROM teams WHERE team_id = ?", teamID).Scan(&loginCode, &role, &loginTime)
+	if err != nil {
+		fmt.Println("teams query error:", err)
+	} else {
+		fmt.Printf("teams: team_id=%d login_code=%v role=%v login_time=%v\n", teamID, loginCode.String, role.String, loginTime.String)
+	}
+
+	var atStation sql.NullInt64
+	var finishedStations sql.NullString
+	err = db.QueryRow("SELECT atStation, finishedStations FROM checkpoints WHERE team_id = ?", teamID).Scan(&atStation, &finishedStations)
+	if err != nil {
+		fmt.Println("checkpoints query error:", err)
+	} else {
+		fmt.Printf("checkpoints: atStation=%v finishedStations=%v\n", atStation.Int64, finishedStations.String)
+	}
+
+	rows, err := db.Query("SELECT queue_id, position, team_id FROM queues WHERE team_id = ?", teamID)
+	if err != nil {
+		fmt.Println("queues query error:", err)
+	} else {
+		defer rows.Close()
+		for rows.Next() {
+			var qid, pos, tid int
+			rows.Scan(&qid, &pos, &tid)
+			fmt.Printf("queue row: queue_id=%d position=%d team_id=%d\n", qid, pos, tid)
+		}
+	}
+}

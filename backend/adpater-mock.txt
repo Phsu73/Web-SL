@@ -1,0 +1,675 @@
+/*
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"sync"
+	"time"
+
+	"cloud.google.com/go/storage"
+	_ "github.com/mattn/go-sqlite3"
+)
+
+const bucketName = "scilab-hackathon-game"
+const db = "hackathon-game.db"
+const tmpDBPath = "/tmp/hackathon-game.db"
+
+var (
+	dbMutex    sync.RWMutex // For database file operations
+	cloudMutex sync.Mutex   // For update file on cloud
+)
+
+func loadDB() error { // only load the database has not been loaded to tmp yet
+	if _, err := os.Stat(tmpDBPath); err == nil {
+		fmt.Println("Database file already exists, skipping download")
+		return nil
+	}
+	fmt.Println("Downloading database from Google Cloud Storage...")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return fmt.Errorf("storage.NewClient: %v", err)
+	}
+	defer client.Close()
+
+	rc, err := client.Bucket(bucketName).Object(db).NewReader(ctx)
+	if err != nil {
+		return fmt.Errorf("unable to read object: %v", err)
+	}
+	defer rc.Close()
+
+	outFile, err := os.Create(tmpDBPath)
+	if err != nil {
+		return fmt.Errorf("os.Create: %v", err)
+	}
+	defer outFile.Close()
+
+	if _, err := io.Copy(outFile, rc); err != nil {
+		return fmt.Errorf("copying DB file: %v", err)
+	}
+	fmt.Println("Database downloaded successfully")
+	return nil
+}
+
+func updateDB() error {
+	cloudMutex.Lock()
+	defer cloudMutex.Unlock()
+
+	fmt.Println("Update database to Google Cloud Storage...")
+
+	ctx := context.Background()
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return fmt.Errorf("storage.NewClient: %w", err)
+	}
+	defer client.Close()
+
+	f, err := os.Open(tmpDBPath)
+	if err != nil {
+		return fmt.Errorf("os.Open (%s): %w", tmpDBPath, err)
+	}
+	defer f.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	wc := client.Bucket(bucketName).Object(db).NewWriter(ctx)
+	if _, err = io.Copy(wc, f); err != nil {
+		return fmt.Errorf("io.Copy: %w", err)
+	}
+	if err := wc.Close(); err != nil {
+		return fmt.Errorf("Writer.Close: %w", err)
+	}
+	fmt.Fprintf(os.Stdout, "Successfully uploaded %s to bucket %s as %s\n", tmpDBPath, bucketName, db)
+	return nil
+}
+
+// load questions
+
+func loadQuestion(stationID int) (string, error) {
+	fmt.Printf("Loading question for station ID: %d\n", stationID)
+	if err := loadDB(); err != nil {
+		return "", fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return "", fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return "", fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var question string
+	err = db.QueryRow("SELECT question FROM stations WHERE station_id = ?", stationID).Scan(&question)
+	if err != nil {
+		return "", fmt.Errorf("query question: %v", err)
+	}
+	fmt.Printf("Successfully load question.")
+	return question, nil
+}
+
+// load hint
+func loadHint(stationID int, hintNum int) (string, error) {
+	fmt.Printf("Loading %s for station ID: %d\n", hintNum, stationID)
+	if err := loadDB(); err != nil {
+		return "", fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return "", fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return "", fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var hint string
+	query := fmt.Sprintf("SELECT hint%d FROM stations WHERE station_id = ?", hintNum)
+	err = db.QueryRow(query, stationID).Scan(&hint)
+	if err != nil {
+		return "", fmt.Errorf("query hint: %v", err)
+	}
+	fmt.Printf("Successfully load hint.")
+	return hint, nil
+}
+
+// check answer & calculate score
+
+func loadCorrectAnswer(stationID int) (string, error) {
+	fmt.Printf("Loading answer for station ID: %d\n", stationID)
+	if err := loadDB(); err != nil {
+		return "", fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return "", fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return "", fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var answer string
+	err = db.QueryRow("SELECT answer FROM stations WHERE station_id = ?", stationID).Scan(&answer)
+	if err != nil {
+		return "", fmt.Errorf("query answer: %v", err)
+	}
+	fmt.Printf("Successfully load answer.")
+	return answer, nil
+}
+
+func loadRoom(stationID int) (string, error) {
+	fmt.Printf("Loading room for station ID: %d\n", stationID)
+	if err := loadDB(); err != nil {
+		return "", fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return "", fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return "", fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var room string
+	err = db.QueryRow("SELECT room FROM stations WHERE station_id = ?", stationID).Scan(&room)
+	if err != nil {
+		return "", fmt.Errorf("query room: %v", err)
+	}
+	fmt.Printf("Successfully load room.")
+	return room, nil
+}
+
+func loadScore(teamID int) (int, error) {
+	fmt.Printf("Loading score for team ID: %d\n", teamID)
+	if err := loadDB(); err != nil {
+		return -1, fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return -1, fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return -1, fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var score int
+	err = db.QueryRow("SELECT score FROM scores WHERE team_id = ?", teamID).Scan(&score)
+	if err != nil {
+		return -1, fmt.Errorf("query answer: %v", err)
+	}
+	fmt.Printf("Successfully load answer.")
+	return score, nil
+}
+
+func loadHintClicked(teamID int, questionID int) (int, error) {
+	fmt.Printf("Loading Hint Clicked for team ID: %d\n", teamID)
+	if err := loadDB(); err != nil {
+		return -1, fmt.Errorf("failed to load database: %v", err)
+	}
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return -1, fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		return -1, fmt.Errorf("database ping failed: %v", err)
+	}
+	var hintClicked int
+	err = db.QueryRow("SELECT clicked FROM hint_click WHERE team_id = ? AND question_id = ?", teamID, questionID).Scan(&hintClicked)
+	if err == sql.ErrNoRows {
+		fmt.Printf("No hint_click record found, defaulting to 0\n")
+		return 0, nil
+	}
+	if err != nil {
+		return -1, fmt.Errorf("query hint clicked: %v", err)
+	}
+	fmt.Printf("Successfully load hint clicked.")
+	return hintClicked, nil
+}
+
+func saveHintClicked(teamID int, questionID int, clicked int) error {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	fmt.Printf("Saving hint_clicked for team ID: %d at station ID: %d, clicked = %d\n", teamID, questionID, clicked)
+	if err := loadDB(); err != nil {
+		return fmt.Errorf("failed to load database: %v", err)
+	}
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("database ping failed: %v", err)
+	}
+	currentClicked, err := loadHintClicked(teamID, questionID)
+	if err != nil {
+		return fmt.Errorf("load hint clicked failed: %v", err)
+	}
+	if currentClicked < clicked {
+		res, err := db.Exec("UPDATE hint_click SET clicked = ? WHERE team_id = ? AND question_id = ?", clicked, teamID, questionID)
+		if err != nil {
+			return fmt.Errorf("update hint_click failed: %v", err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("checking rows affected: %v", err)
+		}
+		if rows == 0 {
+			fmt.Printf("No existing record found for team %d at station %d, inserting new record\n", teamID, questionID)
+			_, err := db.Exec("INSERT INTO hint_click (team_id, question_id, clicked) VALUES (?, ?, ?)", teamID, questionID, clicked)
+			if err != nil {
+				return fmt.Errorf("insert hint_click failed: %v", err)
+			}
+			fmt.Println("Successfully inserted new record for hint_click.")
+		}
+
+		if err := updateDB(); err != nil {
+			fmt.Printf("Warning: Failed to sync database to cloud: %v\n", err)
+		}
+		fmt.Println("Successfully saved to hint_click.")
+		return nil
+	} else {
+		fmt.Printf("No update needed, current clicked (%d) is greater than or equal to new clicked (%d)\n", currentClicked, clicked)
+		return nil
+	}
+}
+
+func saveScore(teamID int, score int) error {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	fmt.Printf("Saving score for team ID: %d\n", teamID)
+	if err := loadDB(); err != nil {
+		return fmt.Errorf("failed to load database: %v", err)
+	}
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("database ping failed: %v", err)
+	}
+
+	_, err = db.Exec("UPDATE scores SET score = ? WHERE team_id = ?", score, teamID)
+	if err != nil {
+		return fmt.Errorf("update score: %v", err)
+	}
+	fmt.Println("Successfully saved score.")
+	if err := updateDB(); err != nil {
+		fmt.Printf("Warning: Failed to sync database to cloud: %v\n", err)
+	}
+	return nil
+}
+
+// Verification
+func loadLoginInfo(teamID int) (string, error) {
+	fmt.Printf("Loading login info for team ID: %d\n", teamID)
+	if err := loadDB(); err != nil {
+		return "", fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return "", fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return "", fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var loginCode string
+	err = db.QueryRow("SELECT login_code FROM teams WHERE team_id = ?", teamID).Scan(&loginCode)
+	if err != nil {
+		return "", fmt.Errorf("query login_code: %v", err)
+	}
+	fmt.Printf("Successfully load login code.")
+	return loginCode, nil
+}
+
+// Queue manager
+
+func addQueue(teamID int, questionID int) (bool, error) { // recheck this func
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	fmt.Printf("Adding team %d to queues for question %d\n", teamID, questionID)
+	if err := loadDB(); err != nil {
+		return false, fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return false, fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return false, fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var existingPosition int
+	err = db.QueryRow(`SELECT position FROM queues WHERE queue_id = ? AND team_id = ?`, questionID, teamID).Scan(&existingPosition)
+	if err == nil {
+		fmt.Printf("Team %d is already in queue for question %d at position %d\n", teamID, questionID, existingPosition)
+		return true, nil // Team is already in queue, return success
+	} else if err != sql.ErrNoRows {
+		return false, fmt.Errorf("failed to check existing queue position: %v", err)
+	}
+
+	var count int
+	err = db.QueryRow(`SELECT COUNT(*) FROM queues WHERE queue_id = ?`, questionID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to count queue: %v", err)
+	}
+
+	if count > 1 {
+		fmt.Println("Queue is full, cannot add more teams.")
+		return false, nil
+	}
+
+	position := count + 1
+
+	_, err = db.Exec(`
+		INSERT INTO queues (queue_id, position, team_id)
+		VALUES (?, ?, ?)`, questionID, position, teamID)
+	if err != nil {
+		return false, fmt.Errorf("insert into queues: %v", err)
+	}
+	if err := updateDB(); err != nil {
+		fmt.Printf("Warning: Failed to sync database to cloud: %v\n", err)
+	}
+	fmt.Println("Successfully added to queue at position", position)
+	return true, nil
+}
+
+func removeQueue(teamID int, questionID int) error {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	fmt.Printf("Removing team %d from queue for question %d\n", teamID, questionID)
+
+	if err := loadDB(); err != nil {
+		return fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var pos int
+	err = db.QueryRow(`SELECT position FROM queues WHERE queue_id = ? AND team_id = ?`, questionID, teamID).Scan(&pos)
+	if err == sql.ErrNoRows {
+		fmt.Println("Team not found in queue, nothing to remove.")
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("failed to find team position: %v", err)
+	}
+	_, err = db.Exec(`DELETE FROM queues WHERE queue_id = ? AND team_id = ?`, questionID, teamID)
+	if err != nil {
+		return fmt.Errorf("failed to delete team from queue: %v", err)
+	}
+
+	_, err = db.Exec(`
+		UPDATE queues
+		SET position = position - 1
+		WHERE queue_id = ? AND position > ?
+	`, questionID, pos)
+	if err != nil {
+		return fmt.Errorf("failed to shift queue: %v", err)
+	}
+	if err := updateDB(); err != nil {
+		fmt.Printf("Warning: Failed to sync database to cloud: %v\n", err)
+	}
+	fmt.Println("Successfully removed team from queue and updated positions.")
+	return nil
+}
+func saveAndLoadLoginTime(teamID int, loginTime time.Time) (time.Time, error) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+    if err := loadDB(); err != nil {
+        return time.Time{}, fmt.Errorf("failed to load database: %v", err)
+    }
+
+    db, err := sql.Open("sqlite3", tmpDBPath)
+    if err != nil {
+        return time.Time{}, fmt.Errorf("open DB: %v", err)
+    }
+    defer db.Close()
+
+    _, err = db.Exec("UPDATE teams SET login_time = ? WHERE team_id = ? AND login_time IS NULL",
+        loginTime.Format(time.RFC3339), teamID)
+    if err != nil {
+        return time.Time{}, fmt.Errorf("update login time: %v", err)
+    }
+
+	fmt.Println("Successfully updated login time for team:", teamID)
+	var existingLoginTime string
+	err = db.QueryRow("SELECT login_time FROM teams WHERE team_id = ?", teamID).Scan(&existingLoginTime);
+	if err != nil {
+		return time.Time{}, fmt.Errorf("query login time: %v", err)
+	}
+	var resLoginTime time.Time
+	resLoginTime, err = time.Parse(time.RFC3339, existingLoginTime)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse login time: %v", err)
+	}
+    if err := updateDB(); err != nil {
+        fmt.Printf("Warning: Failed to sync database to cloud: %v\n", err)
+    }
+	fmt.Println("Successfully saved login time.")
+    return resLoginTime, nil
+}
+
+
+
+func checkSessionValidity(teamID int) (bool, int, error) {
+	if err := loadDB(); err != nil {
+		return false, 0, fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return false, 0, fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	var loginTimeStr string
+	err = db.QueryRow("SELECT login_time FROM teams WHERE team_id = ?", teamID).Scan(&loginTimeStr)
+	if err != nil {
+		return false, 0, fmt.Errorf("query login time: %v", err)
+	}
+
+	loginTime, err := time.Parse(time.RFC3339, loginTimeStr)
+	if err != nil {
+		return false, 0, fmt.Errorf("parse login time: %v", err)
+	}
+
+	now := time.Now()
+	elapsed := now.Sub(loginTime)
+	remaining := (3 * time.Hour) - elapsed
+
+	if remaining <= 0 {
+		return false, 0, nil
+	}
+
+	return true, int(remaining.Seconds()), nil
+}
+
+// Handle station availability
+func addCurrentStation(teamID int, stationID int) error {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	fmt.Printf("Adding current station for team %d: %d\n", teamID, stationID)
+	if err := loadDB(); err != nil {
+		return fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("database ping failed: %v", err)
+	}
+
+	_, err = db.Exec("UPDATE checkpoints SET atStation = ? WHERE team_id = ?", strconv.Itoa(stationID), teamID)
+	if err != nil {
+		return fmt.Errorf("update current station: %v", err)
+	}
+	fmt.Println("Successfully updated current station.")
+	if err := updateDB(); err != nil {
+		fmt.Printf("Warning: Failed to sync database to cloud: %v\n", err)
+	}
+	return nil
+}
+
+func loadCurrentStation(teamID int) (int, error) {
+	var currentStation int
+	fmt.Printf("Adding current station for team %d\n", teamID)
+	if err := loadDB(); err != nil {
+		return -1, fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return -1, fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return -1, fmt.Errorf("database ping failed: %v", err)
+	}
+
+	err = db.QueryRow("SELECT atStation FROM checkpoints WHERE team_id = ?", teamID).Scan(&currentStation)
+	if err != nil {
+		return -1, fmt.Errorf("query current station: %v", err)
+	}
+	fmt.Println("Successfully load current station.")
+	return currentStation, nil
+}
+
+func removeCurrentStation(teamID int) error {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	fmt.Printf("Removing current station for team %d\n", teamID)
+	if err := loadDB(); err != nil {
+		return fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("database ping failed: %v", err)
+	}
+
+	_, err = db.Exec("UPDATE checkpoints SET atStation = 0 WHERE team_id = ?", teamID)
+	if err != nil {
+		return fmt.Errorf("update current station: %v", err)
+	}
+	fmt.Println("Successfully removed current station.")
+	if err := updateDB(); err != nil {
+		fmt.Printf("Warning: Failed to sync database to cloud: %v\n", err)
+	}
+	return nil
+}
+
+func loadFinishedStations(teamID int) (string, error) {
+	fmt.Printf("Loading finished stations for team ID: %d\n", teamID)
+	if err := loadDB(); err != nil {
+		return "", fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return "", fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return "", fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var finishedStations string
+	err = db.QueryRow("SELECT finishedStations FROM checkpoints WHERE team_id = ?", teamID).Scan(&finishedStations)
+	if err != nil {
+		return "", fmt.Errorf("query finished stations: %v", err)
+	}
+	fmt.Printf("Successfully load finished stations.")
+	return finishedStations, nil
+}
+
+func updateProgress(teamID int, stationID int) (bool, error) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	fmt.Printf("Updating progress for team %d at station %d\n", teamID, stationID)
+	if err := loadDB(); err != nil {
+		return false, fmt.Errorf("failed to load database: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", tmpDBPath)
+	if err != nil {
+		return false, fmt.Errorf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return false, fmt.Errorf("database ping failed: %v", err)
+	}
+
+	var currentStation int
+	err = db.QueryRow("SELECT atStation FROM checkpoints WHERE team_id = ?", teamID).Scan(&currentStation)
+	if currentStation != stationID {
+		fmt.Printf("Team %d is not at the correct station\n", teamID)
+		return false, nil
+	}
+	_, err = db.Exec("UPDATE checkpoints SET finishedStations = finishedStations || ? || ',' WHERE team_id = ?", strconv.Itoa(stationID), teamID)
+	if err != nil {
+		return false, fmt.Errorf("update progress: %v", err)
+	}
+	fmt.Println("Successfully updated progress.")
+	if err := updateDB(); err != nil {
+		fmt.Printf("Warning: Failed to sync database to cloud: %v\n", err)
+	}
+	return true, nil
+}/*
