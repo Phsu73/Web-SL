@@ -2,3 +2,44 @@
 hackathon-game.db
 backend/hackathon-game.db
 
+# Environment variables with sensitive data
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env.local
+
+# Node.js / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.netlify/
+
+# Go / Backend
+backend/server
+backend/*.exe
+backend/*.exe~
+backend/*.dll
+backend/*.so
+backend/*.dylib
+backend/tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Render
+render-blueprint.yaml
+
+# Logs
+*.log
+npm-debug.log*
+

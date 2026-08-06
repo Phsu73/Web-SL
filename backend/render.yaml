@@ -1,0 +1,27 @@
+# Render.com Blueprint - Auto-deploy Go Backend
+# Document: https://render.com/docs/blueprints
+
+services:
+  - type: pserv # Private Service (backend API)
+    name: hackathon-backend
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./backend
+    region: singapore # Hoặc oregon, frankfurt
+    plan: free # Free tier: 512MB RAM, 0.1 CPU
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: DB_PATH
+        value: /opt/render/project/backend/data/hackathon-game.db
+      - key: ALLOWED_ORIGINS
+        value: https://YOUR_NETLIFY_SITE.netlify.app,http://localhost:5173
+      - key: ENVIRONMENT
+        value: production
+    disk:
+      name: data
+      mountPath: /opt/render/project/backend/data
+      sizeGB: 1
+
+# Sau khi deploy, lấy URL từ Render Dashboard
+# URL sẽ dạng: https://hackathon-backend.onrender.com
