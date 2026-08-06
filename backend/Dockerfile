@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Build stage - Go 1.23
-FROM golang:1.23-bullseye AS build
+# Build stage - Go 1.24
+FROM golang:1.24-bullseye AS build
 
 WORKDIR /app
 
