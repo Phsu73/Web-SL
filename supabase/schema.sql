@@ -137,12 +137,12 @@ INSERT INTO station_codes (station_id, code_number, code_value, points) VALUES
 -- INSERT DATA: INITIAL TEAMS
 -- ============================================================
 INSERT INTO teams (team_id, team_name, login_code) VALUES
-(1, '3AE', '3ae123'),
-(2, '5 đứa', '5dua45'),
-(3, 'Nguyễn Huệ', 'nguyenhue'),
-(4, 'Tò Te Tí Tèo', 'totetiteo'),
-(5, 'Trio Trường Chinh', 'triotruongchinh'),
-(6, 'Team ghép đội', 'teamghep');
+(1, 'HVL', 'hvl2026'),
+(2, 'Người đẹp và hacker', 'nguoidep2026'),
+(3, '4-Dimensional (4D)', '4d2026'),
+(4, 'Blackpink', 'bpink2026'),
+(5, 'PTLC', 'ptlc2026'),
+(6, 'AI-T4', 'ait42026');
 
 -- Host team
 INSERT INTO teams (team_id, team_name, login_code, role) VALUES
