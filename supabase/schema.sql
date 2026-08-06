@@ -137,12 +137,13 @@ INSERT INTO station_codes (station_id, code_number, code_value, points) VALUES
 -- INSERT DATA: INITIAL TEAMS
 -- ============================================================
 INSERT INTO teams (team_id, team_name, login_code) VALUES
-(1, 'HVL', 'hvl2026'),
-(2, 'Người đẹp và hacker', 'nguoidep2026'),
-(3, '4-Dimensional (4D)', '4d2026'),
-(4, 'Blackpink', 'bpink2026'),
-(5, 'PTLC', 'ptlc2026'),
-(6, 'AI-T4', 'ait42026');
+(1, 'Noname', 'noname123'),
+(2, 'HVL', 'hvl23'),
+(3, 'GHacker', 'ghacker36'),
+(4, '4D', '4444d'),
+(5, 'blackpink', 'blackpink4444'),
+(6, 'PTLC', 'ptlc123'),
+(7, 'AI-T4', 'ait4321');
 
 -- Host team
 INSERT INTO teams (team_id, team_name, login_code, role) VALUES
@@ -158,6 +159,7 @@ INSERT INTO scores (team_id, score, confirm_count) VALUES
 (4, 0, 0),
 (5, 0, 0),
 (6, 0, 0),
+(7, 0, 0),
 (999999, 0, 0);
 
 -- ============================================================
@@ -170,6 +172,7 @@ INSERT INTO checkpoints (team_id, finishedStations, atStation) VALUES
 (4, '', 1),
 (5, '', 1),
 (6, '', 1),
+(7, '', 1),
 (999999, '', 1);
 
 -- ============================================================
