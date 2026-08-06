@@ -17,7 +17,7 @@ services:
         # Format: postgres://postgres:[password]@db.[project].supabase.co:5432/postgres
         value: postgres://postgres:trannguyenphu125@db.bhufnlndpxfcjagzmjrs.supabase.co:5432/postgres
       - key: ALLOWED_ORIGINS
-        # ⚠️ THAY THỂ BẰNG URL NETLIFY CỦA BẠN SAU KHI DEPLOY FRONTEND
-        value: https://YOUR_NETLIFY_SITE.netlify.app,http://localhost:5173
+        # Netlify Frontend URL
+        value: https://serene-arithmetic-cb430f.netlify.app,http://localhost:5173
       - key: ENVIRONMENT
         value: production
