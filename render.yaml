@@ -2,7 +2,7 @@
 # PostgreSQL database on Supabase, backend on Render
 
 services:
-  - type: pserv
+  - type: web
     name: hackathon-backend
     env: docker
     dockerfilePath: ./backend/Dockerfile
