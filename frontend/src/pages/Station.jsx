@@ -316,7 +316,9 @@ function Station() {
                       background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
                     }}
                   >
-                    {nextStation === 0 ? 'Xem kết quả' : `Chuyển sang thử thách ${nextStation}`}
+                    {!nextStation || nextStation === 0 || nextStation > 7
+                      ? '🎉 Hoàn thành tất cả thử thách!'
+                      : `Chuyển sang thử thách ${nextStation}`}
                   </Button>
                 </Fade>
               )}

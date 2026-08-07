@@ -20,8 +20,14 @@ func getDBPath() string {
 	if url := os.Getenv("POSTGRES_URL"); url != "" {
 		return url
 	}
-	// Default to Supabase
-	return "postgres://postgres:trannguyenphu125@db.bhufnlndpxfcjagzmjrs.supabase.co:5432/postgres"
+	// Default to Supabase - Session mode
+	// Set DATABASE_URL environment variable with your connection string
+	// Format: postgresql://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
+	// Example: export DATABASE_URL="postgresql://postgres.pvsobtvlgopqazlceamq:YOUR_PASSWORD@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres"
+	if url := os.Getenv("DATABASE_URL"); url != "" {
+		return url
+	}
+	return "" // Return empty if no DATABASE_URL set
 }
 
 var (

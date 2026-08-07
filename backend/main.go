@@ -275,10 +275,9 @@ func isHost(teamID int) (bool, error) {
 	var role sql.NullString
 	err := globalDB.QueryRow("SELECT role FROM teams WHERE team_id = $1", teamID).Scan(&role)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
-		return false, fmt.Errorf("query role: %v", err)
+		// If role column doesn't exist or query fails, assume player role
+		fmt.Printf("WARNING: Failed to query role for team %d: %v. Assuming player role.\n", teamID, err)
+		return false, nil
 	}
 	return role.Valid && role.String == "host", nil
 }
@@ -1343,16 +1342,22 @@ func progressHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Printf("Received progress request from team %d", req.TeamID)
+
+	// Load current station (atStation) instead of finished count
+	currentStation, err := loadCurrentStation(req.TeamID)
+	if err != nil {
+		http.Error(w, "Failed to load current station", http.StatusInternalServerError)
+		return
+	}
+
 	finishedStations, err := loadFinishedStations(req.TeamID)
 	if err != nil {
 		http.Error(w, "Failed to load finished stations", http.StatusInternalServerError)
 		return
 	}
-	var finishedCount int
+
 	finishedIDs := []int{}
-	if finishedStations == "" {
-		finishedCount = 0
-	} else {
+	if finishedStations != "" {
 		parts := strings.Split(finishedStations, ",")
 		for _, p := range parts {
 			p = strings.TrimSpace(p)
@@ -1364,19 +1369,19 @@ func progressHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if num > 0 {
-				finishedCount++
 				finishedIDs = append(finishedIDs, num)
 			}
 		}
 	}
+
 	response := GetProgressResponse{
-		Progress:         finishedCount,
+		Progress:         currentStation, // Return actual current station (1-7), not finished count
 		NextStation:      "",
 		FinishedStations: finishedIDs,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
-	fmt.Printf("Successfully sent progress status.")
+	fmt.Printf("Successfully sent progress status. Current station: %d, Finished: %v\n", currentStation, finishedIDs)
 }
 
 // ============================================================
