@@ -20,7 +20,8 @@ func getDBPath() string {
 	if url := os.Getenv("POSTGRES_URL"); url != "" {
 		return url
 	}
-	return "postgres://postgres:trannguyenphu125@localhost:5432/postgres"
+	// Default to Supabase
+	return "postgres://postgres:trannguyenphu125@db.bhufnlndpxfcjagzmjrs.supabase.co:5432/postgres"
 }
 
 var (

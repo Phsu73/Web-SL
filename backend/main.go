@@ -273,7 +273,7 @@ func isHost(teamID int) (bool, error) {
 	}
 
 	var role sql.NullString
-	err := globalDB.QueryRow("SELECT role FROM teams WHERE team_id = ?", teamID).Scan(&role)
+	err := globalDB.QueryRow("SELECT role FROM teams WHERE team_id = $1", teamID).Scan(&role)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
@@ -349,6 +349,7 @@ func gameStartHandler(w http.ResponseWriter, r *http.Request) {
 			globalDB.Exec("UPDATE scores SET score = 0")
 			globalDB.Exec("DELETE FROM hint_click")
 			globalDB.Exec("DELETE FROM queues")
+			globalDB.Exec("UPDATE station_codes SET used_by_team_id = NULL, used_at = NULL")
 			fmt.Println("Reset all player data for new game")
 
 			// Generate mentor codes for all teams
@@ -473,28 +474,18 @@ func gameKickAllHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func hasRoleColumn(db *sql.DB) bool {
-	rows, err := db.Query("PRAGMA table_info(teams)")
+	// PostgreSQL version - check if role column exists
+	var columnName string
+	err := db.QueryRow(`
+		SELECT column_name FROM information_schema.columns
+		WHERE table_name = 'teams' AND column_name = 'role'
+		LIMIT 1
+	`).Scan(&columnName)
 	if err != nil {
 		fmt.Printf("Lỗi kiểm tra schema teams: %v\n", err)
 		return false
 	}
-	defer rows.Close()
-
-	var cid int
-	var name, ctype string
-	var notnull, pk int
-	var dfltValue sql.NullString
-	for rows.Next() {
-		err = rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk)
-		if err != nil {
-			fmt.Printf("Lỗi scan PRAGMA table_info: %v\n", err)
-			return false
-		}
-		if name == "role" {
-			return true
-		}
-	}
-	return false
+	return columnName == "role"
 }
 
 func checkLoginInfoLocal(teamName string, loginCode string) (int, bool, string) {
@@ -527,13 +518,8 @@ func checkLoginInfoLocal(teamName string, loginCode string) (int, bool, string) 
 
 	var teamID int
 	var dbLoginCode, role sql.NullString
-	if hasRoleColumn(db) {
-		query := "SELECT team_id, login_code, role FROM teams WHERE team_name = ?"
-		err = db.QueryRow(query, teamName).Scan(&teamID, &dbLoginCode, &role)
-	} else {
-		query := "SELECT team_id, login_code FROM teams WHERE team_name = ?"
-		err = db.QueryRow(query, teamName).Scan(&teamID, &dbLoginCode)
-	}
+	query := "SELECT team_id, login_code, role FROM teams WHERE team_name = $1"
+	err = db.QueryRow(query, teamName).Scan(&teamID, &dbLoginCode, &role)
 	if err != nil {
 		fmt.Printf("Lỗi Query hoặc sai TeamName: %v\n", err)
 		return 0, false, "player"
@@ -623,7 +609,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("Host logged out, all players logged out successfully\n")
 		} else {
 			// Player logout: logout only this player
-			_, err = globalDB.Exec("UPDATE teams SET login_time = NULL WHERE team_id = ?", teamID)
+			_, err = globalDB.Exec("UPDATE teams SET login_time = NULL WHERE team_id = $1", teamID)
 			if err != nil {
 				http.Error(w, "Failed to logout", http.StatusInternalServerError)
 				return
@@ -663,7 +649,7 @@ func resetScoreHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Check if this is the first or second confirmation
 	var confirmCount int
-	err = globalDB.QueryRow("SELECT COALESCE(confirm_count, 0) FROM scores WHERE team_id = ?", req.TeamID).Scan(&confirmCount)
+	err = globalDB.QueryRow("SELECT COALESCE(confirm_count, 0) FROM scores WHERE team_id = $1", req.TeamID).Scan(&confirmCount)
 	if err != nil && err != sql.ErrNoRows {
 		http.Error(w, "Failed to check confirmation count", http.StatusInternalServerError)
 		return
@@ -671,7 +657,7 @@ func resetScoreHandler(w http.ResponseWriter, r *http.Request) {
 
 	if confirmCount >= 1 {
 		// Second confirmation - actually reset the score
-		_, err = globalDB.Exec("UPDATE scores SET score = 0, confirm_count = 0 WHERE team_id = ?", req.TeamID)
+		_, err = globalDB.Exec("UPDATE scores SET score = 0, confirm_count = 0 WHERE team_id = $1", req.TeamID)
 		if err != nil {
 			http.Error(w, "Failed to reset score", http.StatusInternalServerError)
 			return
@@ -690,7 +676,7 @@ func resetScoreHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(response)
 	} else {
 		// First confirmation - increment counter
-		_, err = globalDB.Exec("UPDATE scores SET confirm_count = 1 WHERE team_id = ?", req.TeamID)
+		_, err = globalDB.Exec("UPDATE scores SET confirm_count = 1 WHERE team_id = $1", req.TeamID)
 		if err != nil {
 			http.Error(w, "Failed to set confirmation count", http.StatusInternalServerError)
 			return
@@ -1049,7 +1035,7 @@ func adjustScoreHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log the adjustment
-	_, err = globalDB.Exec("INSERT INTO score_adjustments (team_id, points_change, reason) VALUES (?, ?, ?)",
+	_, err = globalDB.Exec("INSERT INTO score_adjustments (team_id, points_change, reason) VALUES ($1, $2, $3)",
 		req.TeamID, req.PointsChange, req.Reason)
 	if err != nil {
 		fmt.Printf("Warning: Failed to log score adjustment: %v\n", err)
@@ -1110,7 +1096,7 @@ func getTeamProgressHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get team name
 	var teamName string
-	err = globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = ?", teamID).Scan(&teamName)
+	err = globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = $1", teamID).Scan(&teamName)
 	if err != nil {
 		http.Error(w, "Team not found", http.StatusNotFound)
 		return
@@ -1423,7 +1409,7 @@ func mentorLoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get team name
 	var teamName string
-	err = globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = ?", teamID).Scan(&teamName)
+	err = globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = $1", teamID).Scan(&teamName)
 	if err != nil {
 		http.Error(w, "Failed to load team name", http.StatusInternalServerError)
 		return
@@ -1626,7 +1612,7 @@ func generateMentorCodesHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Get team name
 		var teamName string
-		globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = ?", tid).Scan(&teamName)
+		globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = $1", tid).Scan(&teamName)
 
 		generatedCodes = append(generatedCodes, map[string]interface{}{
 			"team_id":     tid,
@@ -1721,7 +1707,7 @@ func generateMentorCodeForTeamHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get team name
 	var teamName string
-	err = globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = ?", req.TeamId).Scan(&teamName)
+	err = globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = $1", req.TeamId).Scan(&teamName)
 	if err != nil {
 		http.Error(w, "Team not found", http.StatusNotFound)
 		return
@@ -1817,7 +1803,7 @@ func mentorVerifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get team name
 	var teamName string
-	err = globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = ?", mentorTeamID).Scan(&teamName)
+	err = globalDB.QueryRow("SELECT team_name FROM teams WHERE team_id = $1", mentorTeamID).Scan(&teamName)
 	if err != nil {
 		http.Error(w, "Team not found", http.StatusNotFound)
 		return
