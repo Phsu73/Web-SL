@@ -93,7 +93,7 @@ function Question() {
   }, [navigate, teamID]);
 
   const handleStartChallenge = () => {
-    if (currentStation > 7) {
+    if (finishedCount >= 7) {
       navigate('/progress');
     } else {
       navigate('/station');
@@ -152,7 +152,7 @@ function Question() {
             Hoàn thành {finishedCount}/7 thử thách
           </Typography>
 
-          {currentStation > 5 ? (
+          {finishedCount >= 7 ? (
             <div style={{ textAlign: 'center', marginTop: '40px' }}>
               <Typography variant="h4" style={{ color: 'white', marginBottom: '20px' }}>
                 🎉 Chúc mừng! Bạn đã hoàn thành tất cả thử thách!

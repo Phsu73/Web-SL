@@ -639,7 +639,7 @@ const Scoreboard = () => {
                         <TextField
                           fullWidth
                           type="number"
-                          placeholder="Số trạm (1-5)"
+                          placeholder="Số trạm (1-7)"
                           value={unlockStationId}
                           onChange={(e) => setUnlockStationId(e.target.value)}
                         />
@@ -697,17 +697,19 @@ const Scoreboard = () => {
                       <Card sx={{ mt: 3, backgroundColor: 'rgba(255,255,255,0.05)' }}>
                         <CardContent>
                           <Typography variant="body1" sx={{ mb: 1 }}>
-                            <strong>Đội:</strong> {teamProgress.TeamName || 'N/A'}
+                            <strong>Đội:</strong> {teamProgress.teamName || 'N/A'}
                           </Typography>
                           <Typography variant="body1" sx={{ mb: 1 }}>
-                            <strong>Điểm:</strong> {teamProgress.Score ?? 0}
+                            <strong>Điểm:</strong> {teamProgress.score ?? 0}
                           </Typography>
                           <Typography variant="body1" sx={{ mb: 1 }}>
-                            <strong>Trạm hiện tại:</strong> {teamProgress.CurrentStation ?? 0}
+                            <strong>Trạm hiện tại:</strong> {teamProgress.currentStation === 0 || teamProgress.currentStation === null
+                              ? 'Hoàn thành tất cả'
+                              : teamProgress.currentStation}
                           </Typography>
                           <Typography variant="body1">
-                            <strong>Đã hoàn thành:</strong> {Array.isArray(teamProgress.FinishedStations) && teamProgress.FinishedStations.length > 0
-                              ? teamProgress.FinishedStations.join(', ')
+                            <strong>Đã hoàn thành:</strong> {Array.isArray(teamProgress.finishedStations) && teamProgress.finishedStations.length > 0
+                              ? teamProgress.finishedStations.join(', ')
                               : 'Chưa có'}
                           </Typography>
                         </CardContent>

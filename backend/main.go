@@ -1369,14 +1369,8 @@ func progressHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	var currentStation int
-	currentStation, err = loadCurrentStation(req.TeamID)
-	if err != nil {
-		http.Error(w, "Failed to load current station", http.StatusInternalServerError)
-		return
-	}
 	response := GetProgressResponse{
-		Progress:         currentStation,
+		Progress:         finishedCount,
 		NextStation:      "",
 		FinishedStations: finishedIDs,
 	}
